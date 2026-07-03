@@ -7,6 +7,7 @@ import threading
 import json
 import http.client
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
 from clients.obstacles_avoid_client import ObstaclesAvoidClient
 from clients.sport_client import SportClient
@@ -30,6 +31,7 @@ ARM_PLANB_PORT = 10088
 ARM_PLANB_DEST = "/move"
 
 DOG_PLANB_PORT = 10088
+REQUEST_TIMESTAMP_TIMEOUT_S = 20.0
 
 
 def nav_log(level, message):
@@ -320,35 +322,51 @@ class RequestHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length) if content_length > 0 else b''
         body_text = body.decode('utf-8', errors='replace') if body else ''
         nav_info(f"post received path={self.path} content_length={content_length} body={body_text}")
+        parsed_url = urlparse(self.path)
+        request_path = parsed_url.path
 
-        if self.path == '/mock-move':
+        timestamp_required_paths = {
+            '/mock-move-mobile',
+            '/mock-back-original',
+            '/mock-move1',
+            '/mock-move2',
+            '/mock-move3',
+            '/mock-move4',
+            '/mock-back',
+        }
+        if request_path in timestamp_required_paths:
+            query_params = parse_qs(parsed_url.query)
+            if not self._validate_request_timestamp(self.path, body_text, query_params):
+                return
+
+        if request_path == '/mock-move':
             self._mock_move()
 
         # 移动样机
-        elif self.path == '/mock-move-mobile':
+        elif request_path == '/mock-move-mobile':
             self._mock_move_mobile()
-        elif self.path == '/mock-back-mobile':
+        elif request_path == '/mock-back-mobile':
             self._mock_back_mobile()
-        elif self.path == '/mock-back-original':
+        elif request_path == '/mock-back-original':
             self._mock_back_original()
 
         # 架构样机
-        elif self.path == '/mock-move1':
+        elif request_path == '/mock-move1':
             self._mock_move1()
-        elif self.path == '/mock-move2':
+        elif request_path == '/mock-move2':
             self._mock_move2()
-        elif self.path == '/mock-move3':
+        elif request_path == '/mock-move3':
             self._mock_move2()
-        elif self.path == '/mock-move4':
+        elif request_path == '/mock-move4':
             self._mock_move4()
-        elif self.path == '/mock-back':
+        elif request_path == '/mock-back':
             self._mock_back()
 
-        elif self.path == '/goleft':
+        elif request_path == '/goleft':
             self._go_left()
-        elif self.path == '/goright':
+        elif request_path == '/goright':
             self._go_right()
-        elif self.path == '/coarse-shift':
+        elif request_path == '/coarse-shift':
             self._coarse_shift(body)
 
         else:
@@ -365,6 +383,53 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         self.wfile.flush()
+
+    def _response_with_status(self, status, msg):
+        body = (msg + '\n').encode('utf-8')
+        self.send_response(status, msg)
+        self.send_header('Content-Type','text/plain')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+
+    def _validate_request_timestamp(self, request_url, body_text, query_params):
+        timestamp = None
+        values = query_params.get('timestamp')
+        if values:
+            timestamp = values[0]
+        elif body_text:
+            try:
+                payload = json.loads(body_text)
+                timestamp = payload.get('timestamp')
+            except json.JSONDecodeError:
+                self._response_error('Invalid JSON body')
+                return False
+
+        if timestamp is None:
+            self._response_error('Missing timestamp')
+            return False
+
+        try:
+            request_time = float(timestamp)
+            if request_time > 100000000000:
+                request_time = request_time / 1000.0
+        except (TypeError, ValueError):
+            self._response_error('Invalid timestamp')
+            return False
+
+        now = time.time()
+        age = abs(now - request_time)
+        nav_info(
+            f"timestamp check url={request_url} timestamp={timestamp} "
+            f"request_time={request_time:.3f} current_time={now:.3f} age={age:.3f}s"
+        )
+        if age > REQUEST_TIMESTAMP_TIMEOUT_S:
+            nav_info(f"request expired url={request_url} timestamp={timestamp} age={age:.3f}s")
+            self._response_with_status(408, 'Request timestamp expired')
+            return False
+
+        return True
 
     def _enqueue_task(self, task):
         global TASK_RUNNING
