@@ -3,6 +3,7 @@ from rclpy.node import Node
 from unitree_go.msg import WirelessController
 import json
 import http.client
+import subprocess
 
 class StartButtonSender(Node):
     def __init__(self):
@@ -134,15 +135,12 @@ class StartButtonSender(Node):
 
     def send_http_double_click(self):
         """双击：同时发送空 JSON 到多个目标"""
-        body = '{}'
+        time_sync_attempted = False
         for ip in self.target_ips_double:
-            self._send_http(
-                host=ip,
-                port=self.target_port_double,
-                path="/api/start/notify",
-                body=body,
-                headers={"Content-Type": "application"}
-            )
+            timestamp = self._send_start_notify(ip, self.target_port_double)
+            if timestamp is not None and not time_sync_attempted:
+                time_sync_attempted = True
+                self.sync_system_time(timestamp)
 
     def send_http_long_press(self):
         """长按 2 秒：发送 curl 等效消息到 192.168.123.99:18891 /api/v1/exec"""
@@ -154,6 +152,82 @@ class StartButtonSender(Node):
             body=body,
             headers={"Content-Type": "application"}
         )
+
+    def _send_start_notify(self, host, port):
+        """POST /api/start/notify and return timestamp from a 200 OK response."""
+        body = '{}'
+        conn = None
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=2.0)
+            headers = {
+                "Content-Type": "application",
+                "Content-Length": str(len(body)),
+                "Connection": "close",
+            }
+            conn.request("POST", "/api/start/notify", body=body, headers=headers)
+            response = conn.getresponse()
+            response_body = response.read().decode("utf-8", errors="replace")
+            self.get_logger().info(
+                f"HTTP success [{host}:{port}]: {response.status} {response.reason}"
+            )
+
+            if response.status != 200:
+                return None
+
+            try:
+                data = json.loads(response_body)
+            except json.JSONDecodeError as e:
+                self.get_logger().error(
+                    f"/api/start/notify JSON parse failed [{host}:{port}]: {e}"
+                )
+                return None
+
+            timestamp = data.get("timestamp")
+            if timestamp is None:
+                self.get_logger().error(
+                    f"/api/start/notify response missing timestamp [{host}:{port}]"
+                )
+                return None
+
+            return timestamp
+        except Exception as e:
+            self.get_logger().error(f"HTTP failed [{host}:{port}]: {e}")
+            return None
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def sync_system_time(self, timestamp):
+        """Sync local system time from Unix seconds or milliseconds."""
+        try:
+            seconds = float(timestamp)
+            if seconds > 100000000000:
+                seconds = seconds / 1000.0
+        except (TypeError, ValueError):
+            self.get_logger().error(f"Invalid timestamp: {timestamp}")
+            return False
+
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "date", "-s", f"@{seconds}"],
+                timeout=3.0,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            output = result.stdout.strip()
+            if output:
+                self.get_logger().info(f"System time synced: {output}")
+            else:
+                self.get_logger().info(f"System time synced: {seconds}")
+            return True
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or str(e)).strip()
+            self.get_logger().error(f"System time sync failed: {detail}")
+            return False
+        except Exception as e:
+            self.get_logger().error(f"System time sync failed: {e}")
+            return False
 
     def _send_http(self, host, port, path, body, headers):
         try:
