@@ -720,7 +720,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             do_delay(spc.stop_move, 0.2)()
             gx(0.05, v) # 防止没站稳跌到
             do_delay(spc.stop_move, 0.2)()
-            gx(1.1, v)
+            gx(0.5, v)
             do_delay(spc.stop_move, 0.2)()
             change_yaw(math.pi * 0.95, v_yaw)
             do_delay(spc.stop_move, 0.2)()
