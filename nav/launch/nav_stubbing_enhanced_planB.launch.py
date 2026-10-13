@@ -1,4 +1,6 @@
 import os
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -7,6 +9,8 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 def generate_launch_description():
     ld = LaunchDescription()
+    ld.add_action(DeclareLaunchArgument('button_testclient_base_url', default_value=''))
+    ld.add_action(DeclareLaunchArgument('right_button_mask', default_value='128'))
 
     go2_base_node = Node(
         package='go2_base',
@@ -49,6 +53,10 @@ def generate_launch_description():
         executable='start_button_node',
         name='start_button_sender',
         output='screen',
+        parameters=[{
+            'button_testclient_base_url': LaunchConfiguration('button_testclient_base_url'),
+            'right_button_mask': LaunchConfiguration('right_button_mask'),
+        }],
     )
     # ========================================
 

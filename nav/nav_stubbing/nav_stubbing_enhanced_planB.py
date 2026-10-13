@@ -7,6 +7,7 @@ import threading
 import json
 import http.client
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from clients.obstacles_avoid_client import ObstaclesAvoidClient
 from clients.sport_client import SportClient
@@ -30,6 +31,7 @@ ARM_PLANB_PORT = 10088
 ARM_PLANB_DEST = "/move"
 
 DOG_PLANB_PORT = 10088
+TESTCLIENT_BASE_URL = ""
 
 
 def nav_log(level, message):
@@ -315,11 +317,60 @@ class RequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         nav_info("http " + (format % args))
 
+    def do_GET(self):
+        if self.path == "/api/v1/testclient":
+            body = json.dumps({"ok": True, "base_url": TESTCLIENT_BASE_URL}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+            return
+        if self.path != "/api/v1/status":
+            self.send_error(404)
+            return
+        with TASK_LOCK:
+            busy = bool(TASK_RUNNING or TASK_QUEUE)
+        payload = {
+            "ok": True,
+            "busy": busy,
+            "pose_ready": node is not None and node.odom is not None,
+            "original_position_recorded": original_pos is not None,
+        }
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length) if content_length > 0 else b''
         body_text = body.decode('utf-8', errors='replace') if body else ''
         nav_info(f"post received path={self.path} content_length={content_length} body={body_text}")
+
+        if self.path == '/api/v1/testclient/register':
+            try:
+                payload = json.loads(body_text or '{}')
+                base_url = str(payload.get('base_url') or '').strip().rstrip('/')
+                parsed = urlsplit(base_url)
+                if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.query or parsed.fragment:
+                    raise ValueError('base_url must be an HTTP(S) URL without query or fragment')
+                global TESTCLIENT_BASE_URL
+                TESTCLIENT_BASE_URL = base_url
+                response = json.dumps({'ok': True, 'base_url': TESTCLIENT_BASE_URL}).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+                self.wfile.flush()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._response_error(str(exc))
+            return
 
         if self.path == '/mock-move':
             self._mock_move()
